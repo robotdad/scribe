@@ -12,12 +12,26 @@ A general-purpose MCP (Model Context Protocol) server for document format conver
 
 ## Installation
 
+### Using uvx (Recommended)
+
+```bash
+# Run directly from GitHub
+uvx --from git+https://github.com/robotdad/scribe.git scribe
+
+# Or install locally for development
+git clone https://github.com/robotdad/scribe.git
+cd scribe
+make install
+```
+
+### Using uv
+
 ```bash
 # Install from the current directory
-pip install -e .
+uv pip install -e .
 
 # Or install dependencies manually
-pip install mcp markitdown pydantic
+uv pip install mcp "markitdown[all]" pydantic
 ```
 
 ## Usage
@@ -25,10 +39,13 @@ pip install mcp markitdown pydantic
 ### As MCP Server
 
 ```bash
-# Start the server
+# Start the server (if installed locally)
 scribe
 
-# Or run directly
+# Or run directly from GitHub
+uvx --from git+https://github.com/robotdad/scribe.git scribe
+
+# Or run from local installation
 python -m scribe
 ```
 
@@ -39,8 +56,8 @@ python -m scribe
   "type": "mcp",
   "config": {
     "server": {
-      "command": "scribe",
-      "args": ["stdio"]
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/robotdad/scribe.git", "scribe"]
     },
     "tool_name": "convert_document",
     "arguments": {
@@ -102,24 +119,32 @@ Get metadata about a document without converting it.
 
 - **Documents**: DOCX, PDF, PPTX, HTML, TXT, MD
 - **Spreadsheets**: XLSX, XLS, CSV
-- **Images**: JPG, PNG, GIF, BMP (with OCR)
-- **Audio**: MP3, WAV, M4A (with transcription)
+- **Images**: JPG, PNG, GIF, BMP
+- **Audio**: MP3, WAV, M4A
+- **Other**: ZIP archives, JSON, XML
+
+*Note: Actual format support depends on markitdown's capabilities and optional dependencies.*
 
 ## Development
 
 ```bash
 # Install development dependencies
-pip install -e ".[dev]"
+make install
 
 # Run tests
-pytest
+make test
 
 # Format code
-black src/
-ruff src/
+make format
 
-# Type checking
-mypy src/
+# Lint code
+make lint
+
+# Check project health
+make doctor
+
+# Build AI context files
+make ai-context-files
 ```
 
 ## Architecture
