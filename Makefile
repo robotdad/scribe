@@ -17,7 +17,7 @@ help: ## Show this help message
 install: ## Install/update all project dependencies
 	@echo ""
 	@echo "Installing project dependencies..."
-	uv sync --group dev
+	uv sync --extra dev
 	@echo "Dependencies installed"
 	@echo ""
 	@echo "Available commands:"
