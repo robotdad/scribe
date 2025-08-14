@@ -83,6 +83,28 @@ Convert a single document with standardized output format.
 - `strip_images` (bool): Remove all image references from output. By default, images are converted to markdown syntax like `![alt](path.png)`. When true, all image references are completely removed (default: false)
 
 **Returns:**
+
+The server provides results in two formats for maximum compatibility:
+
+1. **Structured Content** (Recommended): Access via `result.structuredContent`
+   ```python
+   # Direct access to structured data (no JSON parsing needed)
+   content = result.structuredContent.content[0]
+   meta = result.structuredContent.meta
+   text = content.text
+   filename = content.filename
+   total_files = meta.total_files
+   ```
+
+2. **JSON String** (Legacy): Access via `result.content[0].text`
+   ```python
+   # Requires JSON parsing
+   import json
+   data = json.loads(result.content[0].text)
+   text = data['content'][0]['text']
+   ```
+
+Both formats contain the same data structure:
 ```json
 {
   "content": [
@@ -115,6 +137,12 @@ Convert multiple documents in a directory.
 - `recursive` (bool): Search subdirectories (default: false)
 
 **Returns:**
+
+Same dual format as `convert_document`:
+- **Structured Content** (Recommended): `result.structuredContent` 
+- **JSON String** (Legacy): `result.content[0].text`
+
+Example data structure:
 ```json
 {
   "content": [
