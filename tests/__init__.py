@@ -1,0 +1,1 @@
+"""Test package for Scribe MCP server."""
