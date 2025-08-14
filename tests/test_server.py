@@ -48,24 +48,24 @@ class TestServerTools:
             optimize_transcript=True
         )
         
-        # Check new standardized format
-        assert "content" in result
-        assert "meta" in result
-        assert isinstance(result["content"], list)
-        assert len(result["content"]) == 1
+        # Check Pydantic model structure
+        assert hasattr(result, 'content')
+        assert hasattr(result, 'meta')
+        assert isinstance(result.content, list)
+        assert len(result.content) == 1
         
         # Check meta information
-        meta = result["meta"]
-        assert meta["total_files"] == 1
-        assert meta["successful"] == 1
-        assert meta["failed"] == 0
+        meta = result.meta
+        assert meta.total_files == 1
+        assert meta.successful == 1
+        assert meta.failed == 0
         
         # Check document content
-        doc = result["content"][0]
-        assert doc["type"] == "document"
-        assert doc["status"] == "success"
-        assert doc["filename"].endswith(".txt")
-        assert "Test Document" in doc["text"]
+        doc = result.content[0]
+        assert doc.type == "document"
+        assert doc.status == "success"
+        assert doc.filename.endswith(".txt")
+        assert "Test Document" in doc.text
 
     def test_convert_document_with_strip_images(self, temp_test_file):
         """Test the convert_document tool with strip_images option."""
@@ -81,10 +81,10 @@ class TestServerTools:
             )
             
             # Check that images were stripped
-            doc = result["content"][0]
-            assert "![image](test.png)" not in doc["text"]
-            assert "<img src='test.jpg'>" not in doc["text"]
-            assert "Regular text." in doc["text"]
+            doc = result.content[0]
+            assert "![image](test.png)" not in doc.text
+            assert "<img src='test.jpg'>" not in doc.text
+            assert "Regular text." in doc.text
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
@@ -97,25 +97,25 @@ class TestServerTools:
             optimize_transcript=False
         )
         
-        # Check new standardized format
-        assert "content" in result
-        assert "meta" in result
-        assert isinstance(result["content"], list)
-        assert len(result["content"]) == 3
+        # Check Pydantic model structure
+        assert hasattr(result, 'content')
+        assert hasattr(result, 'meta')
+        assert isinstance(result.content, list)
+        assert len(result.content) == 3
         
         # Check meta information
-        meta = result["meta"]
-        assert meta["total_files"] == 3
-        assert meta["successful"] == 3
-        assert meta["failed"] == 0
+        meta = result.meta
+        assert meta.total_files == 3
+        assert meta.successful == 3
+        assert meta.failed == 0
         
         # Check all documents
-        for i, doc in enumerate(result["content"]):
-            assert doc["type"] == "document"
-            assert doc["status"] == "success"
-            assert doc["filename"].startswith("test")
-            assert doc["filename"].endswith(".txt")
-            assert "Test Document" in doc["text"]
+        for i, doc in enumerate(result.content):
+            assert doc.type == "document"
+            assert doc.status == "success"
+            assert doc.filename.startswith("test")
+            assert doc.filename.endswith(".txt")
+            assert "Test Document" in doc.text
 
     def test_get_document_info(self, temp_test_file):
         """Test the get_document_info tool."""

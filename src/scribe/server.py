@@ -1,18 +1,38 @@
 """Scribe MCP Server - Document conversion server using FastMCP."""
 
 import warnings
-
-# Suppress pydub ffmpeg warnings since they're only needed for audio processing
-warnings.filterwarnings("ignore", message="Couldn't find ffmpeg or avconv", module="pydub")
-
 from typing import Any
 
 from markitdown import MarkItDown
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel
 
 from .converter import DocumentConverter
 from .transcript import TranscriptProcessor
 from .utils import get_file_info, validate_file_path
+
+# Suppress pydub ffmpeg warnings since they're only needed for audio processing
+warnings.filterwarnings("ignore", message="Couldn't find ffmpeg or avconv", module="pydub")
+
+
+class DocumentContent(BaseModel):
+    type: str = "document"
+    source: str
+    filename: str
+    text: str
+    status: str
+
+
+class ConversionMeta(BaseModel):
+    total_files: int
+    successful: int
+    failed: int
+
+
+class ConversionResult(BaseModel):
+    content: list[DocumentContent]
+    meta: ConversionMeta
+
 
 # Initialize FastMCP server
 mcp = FastMCP("Scribe")
@@ -23,12 +43,12 @@ transcript_processor = TranscriptProcessor()
 
 @mcp.tool()
 def convert_document(
-    file_path: str, 
-    output_format: str = "markdown", 
-    optimize_transcript: bool = False, 
+    file_path: str,
+    output_format: str = "markdown",
+    optimize_transcript: bool = False,
     extract_metadata: bool = False,
-    strip_images: bool = False
-) -> dict[str, Any]:
+    strip_images: bool = False,
+) -> ConversionResult:
     """
     Convert a document with standardized output format.
 
@@ -49,7 +69,7 @@ def convert_document(
         file_path=file_path,
         optimize_transcript=optimize_transcript,
         extract_metadata=extract_metadata,
-        transcript_processor=transcript_processor if optimize_transcript else None
+        transcript_processor=transcript_processor if optimize_transcript else None,
     )
 
     # Apply strip_images if requested
@@ -58,7 +78,10 @@ def convert_document(
             if doc["status"] == "success":
                 doc["text"] = converter.strip_images(doc["text"])
 
-    return results
+    # Convert to Pydantic model for structured output
+    return ConversionResult(
+        content=[DocumentContent(**doc) for doc in results["content"]], meta=ConversionMeta(**results["meta"])
+    )
 
 
 @mcp.tool()
@@ -69,7 +92,7 @@ def batch_convert(
     optimize_transcript: bool = False,
     extract_metadata: bool = False,
     recursive: bool = False,
-) -> dict[str, Any]:
+) -> ConversionResult:
     """
     Convert multiple documents in a directory.
 
@@ -96,8 +119,10 @@ def batch_convert(
         transcript_processor=transcript_processor if optimize_transcript else None,
     )
 
-    return results
-
+    # Convert to Pydantic model for structured output
+    return ConversionResult(
+        content=[DocumentContent(**doc) for doc in results["content"]], meta=ConversionMeta(**results["meta"])
+    )
 
 
 @mcp.tool()

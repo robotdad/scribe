@@ -56,11 +56,17 @@ async def test_scribe():
                         "optimize_transcript": True
                     })
                     
-                    # Parse MCP response
-                    if doc_result.content and hasattr(doc_result.content[0], 'text'):
-                        doc_data = json.loads(doc_result.content[0].text)
+                    # Use structured content directly (no JSON parsing needed!)
+                    if hasattr(doc_result, 'structuredContent') and doc_result.structuredContent:
+                        doc_data = doc_result.structuredContent
+                        print(f"  ✅ Using structured content directly!")
                     else:
-                        doc_data = doc_result.content
+                        # Fallback to parsing JSON from text content
+                        if doc_result.content and hasattr(doc_result.content[0], 'text'):
+                            doc_data = json.loads(doc_result.content[0].text)
+                            print(f"  ⚠️  Using JSON parsing fallback")
+                        else:
+                            doc_data = doc_result.content
                     
                     if isinstance(doc_data, dict) and 'meta' in doc_data:
                         print(f"  Total files: {doc_data['meta']['total_files']}")
@@ -107,11 +113,17 @@ async def test_scribe():
                         "optimize_transcript": True
                     })
                     
-                    # Parse MCP response
-                    if batch_result.content and hasattr(batch_result.content[0], 'text'):
-                        batch_data = json.loads(batch_result.content[0].text)
+                    # Use structured content directly (no JSON parsing needed!)
+                    if hasattr(batch_result, 'structuredContent') and batch_result.structuredContent:
+                        batch_data = batch_result.structuredContent
+                        print(f"  ✅ Using structured content directly!")
                     else:
-                        batch_data = batch_result.content
+                        # Fallback to parsing JSON from text content
+                        if batch_result.content and hasattr(batch_result.content[0], 'text'):
+                            batch_data = json.loads(batch_result.content[0].text)
+                            print(f"  ⚠️  Using JSON parsing fallback")
+                        else:
+                            batch_data = batch_result.content
                     
                     if isinstance(batch_data, dict) and 'meta' in batch_data:
                         print(f"  Total files: {batch_data['meta']['total_files']}")
