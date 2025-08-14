@@ -73,20 +73,34 @@ python -m scribe
 
 ### `convert_document`
 
-Convert a single document to markdown.
+Convert a single document with standardized output format.
 
 **Arguments:**
 - `file_path` (str): Path to the input document
 - `output_format` (str): Output format (default: "markdown")
 - `optimize_transcript` (bool): Apply transcript optimizations (default: false)
-- `strip_images` (bool): Remove image references (default: false)
+- `extract_metadata` (bool): Extract additional metadata (default: false)
+- `strip_images` (bool): Remove all image references from output. By default, images are converted to markdown syntax like `![alt](path.png)`. When true, all image references are completely removed (default: false)
 
 **Returns:**
-- `content`: Converted document content
-- `transcript_metadata`: Speaker and timestamp data (if optimize_transcript=true)
-- `file_info`: File metadata
-- `word_count`: Number of words
-- `conversion_successful`: Success status
+```json
+{
+  "content": [
+    {
+      "type": "document",
+      "source": "/path/to/file.docx",
+      "filename": "file.docx", 
+      "text": "converted document text...",
+      "status": "success"
+    }
+  ],
+  "meta": {
+    "total_files": 1,
+    "successful": 1,
+    "failed": 0
+  }
+}
+```
 
 ### `batch_convert`
 
@@ -97,13 +111,35 @@ Convert multiple documents in a directory.
 - `pattern` (str): File pattern to match (default: "*")
 - `output_format` (str): Output format (default: "markdown")
 - `optimize_transcript` (bool): Apply transcript optimizations (default: false)
+- `extract_metadata` (bool): Extract additional metadata (default: false)
 - `recursive` (bool): Search subdirectories (default: false)
 
 **Returns:**
-- `total_files`: Number of files found
-- `successful`: Number of successful conversions
-- `failed`: Number of failed conversions
-- `results`: Array of conversion results with content
+```json
+{
+  "content": [
+    {
+      "type": "document",
+      "source": "/path/to/file1.docx",
+      "filename": "file1.docx",
+      "text": "converted document text...",
+      "status": "success"
+    },
+    {
+      "type": "document", 
+      "source": "/path/to/file2.docx",
+      "filename": "file2.docx",
+      "text": "converted document text...",
+      "status": "success"
+    }
+  ],
+  "meta": {
+    "total_files": 2,
+    "successful": 2,
+    "failed": 0
+  }
+}
+```
 
 ### `get_document_info`
 
@@ -124,6 +160,10 @@ Get metadata about a document without converting it.
 - **Other**: ZIP archives, JSON, XML
 
 *Note: Actual format support depends on markitdown's capabilities and optional dependencies.*
+
+## Image Handling
+
+Images within documents are converted to markdown reference syntax (e.g., `![alt text](image.png)`). The image files themselves are not embedded or copied - only references to the original file paths are preserved. Use the `strip_images` parameter to completely remove all image references from the output if desired.
 
 ## Development
 
