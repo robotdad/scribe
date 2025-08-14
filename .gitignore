@@ -174,4 +174,3 @@ Thumbs.db
 logs/
 output/
 .ruff_cache/
-ai_context/generated/

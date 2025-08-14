@@ -3,7 +3,7 @@
 [git-collector-data]
 
 **URL:** https://github.com/pydantic/pydantic-ai/tree/main/docs  
-**Date:** 7/18/2025, 11:09:12 AM  
+**Date:** 8/13/2025, 6:08:20 PM  
 **Files:** 12  
 
 === File: docs/agents.md ===
@@ -16,14 +16,14 @@ but multiple agents can also interact to embody more complex workflows.
 
 The [`Agent`][pydantic_ai.Agent] class has full API documentation, but conceptually you can think of an agent as a container for:
 
-| **Component**                                 | **Description**                                                                                           |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| [System prompt(s)](#system-prompts)           | A set of instructions for the LLM written by the developer.                                               |
-| [Function tool(s)](tools.md)                  | Functions that the LLM may call to get information while generating a response.                           |
-| [Structured output type](output.md)           | The structured datatype the LLM must return at the end of a run, if specified.                            |
-| [Dependency type constraint](dependencies.md) | System prompt functions, tools, and output validators may all use dependencies when they're run.          |
-| [LLM model](api/models/base.md)               | Optional default LLM model associated with the agent. Can also be specified when running the agent.       |
-| [Model Settings](#additional-configuration)   | Optional default model settings to help fine tune requests. Can also be specified when running the agent. |
+| **Component**                                             | **Description**                                                                                           |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| [System prompt(s)](#system-prompts)                       | A set of instructions for the LLM written by the developer.                                               |
+| [Function tool(s)](tools.md) and [toolsets](toolsets.md)  | Functions that the LLM may call to get information while generating a response.                           |
+| [Structured output type](output.md)                       | The structured datatype the LLM must return at the end of a run, if specified.                            |
+| [Dependency type constraint](dependencies.md)             | System prompt functions, tools, and output validators may all use dependencies when they're run.          |
+| [LLM model](api/models/base.md)                           | Optional default LLM model associated with the agent. Can also be specified when running the agent.       |
+| [Model Settings](#additional-configuration)               | Optional default model settings to help fine tune requests. Can also be specified when running the agent. |
 
 In typing terms, agents are generic in their dependency and output types, e.g., an agent which required dependencies of type `#!python Foobar` and produced outputs of type `#!python list[str]` would have type `Agent[Foobar, list[str]]`. In practice, you shouldn't need to care about this, it should just mean your IDE can tell you when you have the right type, and if you choose to use [static type checking](#static-type-checking) it should work well with Pydantic AI.
 
@@ -72,9 +72,9 @@ print(result.output)
 
 There are four ways to run an agent:
 
-1. [`agent.run()`][pydantic_ai.Agent.run] — a coroutine which returns a [`RunResult`][pydantic_ai.agent.AgentRunResult] containing a completed response.
-2. [`agent.run_sync()`][pydantic_ai.Agent.run_sync] — a plain, synchronous function which returns a [`RunResult`][pydantic_ai.agent.AgentRunResult] containing a completed response (internally, this just calls `loop.run_until_complete(self.run())`).
-3. [`agent.run_stream()`][pydantic_ai.Agent.run_stream] — a coroutine which returns a [`StreamedRunResult`][pydantic_ai.result.StreamedRunResult], which contains methods to stream a response as an async iterable.
+1. [`agent.run()`][pydantic_ai.agent.AbstractAgent.run] — an async function which returns a [`RunResult`][pydantic_ai.agent.AgentRunResult] containing a completed response.
+2. [`agent.run_sync()`][pydantic_ai.agent.AbstractAgent.run_sync] — a plain, synchronous function which returns a [`RunResult`][pydantic_ai.agent.AgentRunResult] containing a completed response (internally, this just calls `loop.run_until_complete(self.run())`).
+3. [`agent.run_stream()`][pydantic_ai.agent.AbstractAgent.run_stream] — an async context manager which returns a [`StreamedRunResult`][pydantic_ai.result.StreamedRunResult], which contains methods to stream text and structured output as an async iterable.
 4. [`agent.iter()`][pydantic_ai.Agent.iter] — a context manager which returns an [`AgentRun`][pydantic_ai.agent.AgentRun], an async-iterable over the nodes of the agent's underlying [`Graph`][pydantic_graph.graph.Graph].
 
 Here's a simple example demonstrating the first three:
@@ -86,28 +86,189 @@ agent = Agent('openai:gpt-4o')
 
 result_sync = agent.run_sync('What is the capital of Italy?')
 print(result_sync.output)
-#> Rome
+#> The capital of Italy is Rome.
 
 
 async def main():
     result = await agent.run('What is the capital of France?')
     print(result.output)
-    #> Paris
+    #> The capital of France is Paris.
 
     async with agent.run_stream('What is the capital of the UK?') as response:
-        print(await response.get_output())
-        #> London
+        async for text in response.stream_text():
+            print(text)
+            #> The capital of
+            #> The capital of the UK is
+            #> The capital of the UK is London.
 ```
 
 _(This example is complete, it can be run "as is" — you'll need to add `asyncio.run(main())` to run `main`)_
 
 You can also pass messages from previous runs to continue a conversation or provide context, as described in [Messages and Chat History](message-history.md).
 
+### Streaming Events and Final Output
+
+As shown in the example above, [`run_stream()`][pydantic_ai.agent.AbstractAgent.run_stream] makes it easy to stream the agent's final output as it comes in.
+It also takes an optional `event_stream_handler` argument that you can use to gain insight into what is happening during the run before the final output is produced.
+
+The example below shows how to stream events and text output. You can also [stream structured output](output.md#streaming-structured-output).
+
+!!! note
+    As the `run_stream()` method will consider the first output matching the `output_type` to be the final output,
+    it will stop running the agent graph and will not execute any tool calls made by the model after this "final" output.
+
+    If you want to always run the agent graph to completion and stream all events from the model's streaming response and the agent's execution of tools,
+    use [`agent.run()`][pydantic_ai.agent.AbstractAgent.run] with an `event_stream_handler` or [`agent.iter()`][pydantic_ai.agent.AbstractAgent.iter] instead, as described in the following sections.
+
+```python {title="run_stream_events.py"}
+import asyncio
+from collections.abc import AsyncIterable
+from datetime import date
+from typing import Union
+
+from pydantic_ai import Agent
+from pydantic_ai.messages import (
+    AgentStreamEvent,
+    FinalResultEvent,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    HandleResponseEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPartDelta,
+    ThinkingPartDelta,
+    ToolCallPartDelta,
+)
+from pydantic_ai.tools import RunContext
+
+weather_agent = Agent(
+    'openai:gpt-4o',
+    system_prompt='Providing a weather forecast at the locations the user provides.',
+)
+
+
+@weather_agent.tool
+async def weather_forecast(
+    ctx: RunContext,
+    location: str,
+    forecast_date: date,
+) -> str:
+    return f'The forecast in {location} on {forecast_date} is 24°C and sunny.'
+
+
+output_messages: list[str] = []
+
+
+async def event_stream_handler(
+    ctx: RunContext,
+    event_stream: AsyncIterable[Union[AgentStreamEvent, HandleResponseEvent]],
+):
+    async for event in event_stream:
+        if isinstance(event, PartStartEvent):
+            output_messages.append(f'[Request] Starting part {event.index}: {event.part!r}')
+        elif isinstance(event, PartDeltaEvent):
+            if isinstance(event.delta, TextPartDelta):
+                output_messages.append(f'[Request] Part {event.index} text delta: {event.delta.content_delta!r}')
+            elif isinstance(event.delta, ThinkingPartDelta):
+                output_messages.append(f'[Request] Part {event.index} thinking delta: {event.delta.content_delta!r}')
+            elif isinstance(event.delta, ToolCallPartDelta):
+                output_messages.append(f'[Request] Part {event.index} args delta: {event.delta.args_delta}')
+        elif isinstance(event, FunctionToolCallEvent):
+            output_messages.append(
+                f'[Tools] The LLM calls tool={event.part.tool_name!r} with args={event.part.args} (tool_call_id={event.part.tool_call_id!r})'
+            )
+        elif isinstance(event, FunctionToolResultEvent):
+            output_messages.append(f'[Tools] Tool call {event.tool_call_id!r} returned => {event.result.content}')
+        elif isinstance(event, FinalResultEvent):
+            output_messages.append(f'[Result] The model starting producing a final result (tool_name={event.tool_name})')
+
+
+async def main():
+    user_prompt = 'What will the weather be like in Paris on Tuesday?'
+
+    async with weather_agent.run_stream(user_prompt, event_stream_handler=event_stream_handler) as run:
+        async for output in run.stream_text():
+            output_messages.append(f'[Output] {output}')
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+    print(output_messages)
+    """
+    [
+        "[Request] Starting part 0: ToolCallPart(tool_name='weather_forecast', tool_call_id='0001')",
+        '[Request] Part 0 args delta: {"location":"Pa',
+        '[Request] Part 0 args delta: ris","forecast_',
+        '[Request] Part 0 args delta: date":"2030-01-',
+        '[Request] Part 0 args delta: 01"}',
+        '[Tools] The LLM calls tool=\'weather_forecast\' with args={"location":"Paris","forecast_date":"2030-01-01"} (tool_call_id=\'0001\')',
+        "[Tools] Tool call '0001' returned => The forecast in Paris on 2030-01-01 is 24°C and sunny.",
+        "[Request] Starting part 0: TextPart(content='It will be ')",
+        '[Result] The model starting producing a final result (tool_name=None)',
+        '[Output] It will be ',
+        '[Output] It will be warm and sunny ',
+        '[Output] It will be warm and sunny in Paris on ',
+        '[Output] It will be warm and sunny in Paris on Tuesday.',
+    ]
+    """
+```
+
+### Streaming All Events
+
+Like `agent.run_stream()`, [`agent.run()`][pydantic_ai.agent.AbstractAgent.run_stream] takes an optional `event_stream_handler`
+argument that lets you stream all events from the model's streaming response and the agent's execution of tools.
+Unlike `run_stream()`, it always runs the agent graph to completion even if text was received ahead of tool calls that looked like it could've been the final result.
+
+!!! note
+    When used with an `event_stream_handler`, the `run()` method currently requires you to piece together the streamed text yourself from the `PartStartEvent` and subsequent `PartDeltaEvent`s instead of providing a `stream_text()` convenience method.
+
+    To get the best of both worlds, at the expense of some additional complexity, you can use [`agent.iter()`][pydantic_ai.agent.AbstractAgent.iter] as described in the next section, which lets you [iterate over the agent graph](#iterating-over-an-agents-graph) and [stream both events and output](#streaming-all-events-and-output) at every step.
+
+```python {title="run_events.py" requires="run_stream_events.py"}
+from run_stream_events import weather_agent, event_stream_handler, output_messages
+
+import asyncio
+
+
+async def main():
+    user_prompt = 'What will the weather be like in Paris on Tuesday?'
+
+    run = await weather_agent.run(user_prompt, event_stream_handler=event_stream_handler)
+
+    output_messages.append(f'[Final Output] {run.output}')
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+    print(output_messages)
+    """
+    [
+        "[Request] Starting part 0: ToolCallPart(tool_name='weather_forecast', tool_call_id='0001')",
+        '[Request] Part 0 args delta: {"location":"Pa',
+        '[Request] Part 0 args delta: ris","forecast_',
+        '[Request] Part 0 args delta: date":"2030-01-',
+        '[Request] Part 0 args delta: 01"}',
+        '[Tools] The LLM calls tool=\'weather_forecast\' with args={"location":"Paris","forecast_date":"2030-01-01"} (tool_call_id=\'0001\')',
+        "[Tools] Tool call '0001' returned => The forecast in Paris on 2030-01-01 is 24°C and sunny.",
+        "[Request] Starting part 0: TextPart(content='It will be ')",
+        '[Result] The model starting producing a final result (tool_name=None)',
+        "[Request] Part 0 text delta: 'warm and sunny '",
+        "[Request] Part 0 text delta: 'in Paris on '",
+        "[Request] Part 0 text delta: 'Tuesday.'",
+        '[Final Output] It will be warm and sunny in Paris on Tuesday.',
+    ]
+    """
+```
+
+_(This example is complete, it can be run "as is")_
+
 ### Iterating Over an Agent's Graph
 
 Under the hood, each `Agent` in Pydantic AI uses **pydantic-graph** to manage its execution flow. **pydantic-graph** is a generic, type-centric library for building and running finite state machines in Python. It doesn't actually depend on Pydantic AI — you can use it standalone for workflows that have nothing to do with GenAI — but Pydantic AI makes use of it to orchestrate the handling of model requests and model responses in an agent's run.
 
-In many scenarios, you don't need to worry about pydantic-graph at all; calling `agent.run(...)` simply traverses the underlying graph from start to finish. However, if you need deeper insight or control — for example to capture each tool invocation, or to inject your own logic at specific stages — Pydantic AI exposes the lower-level iteration process via [`Agent.iter`][pydantic_ai.Agent.iter]. This method returns an [`AgentRun`][pydantic_ai.agent.AgentRun], which you can async-iterate over, or manually drive node-by-node via the [`next`][pydantic_ai.agent.AgentRun.next] method. Once the agent's graph returns an [`End`][pydantic_graph.nodes.End], you have the final result along with a detailed history of all steps.
+In many scenarios, you don't need to worry about pydantic-graph at all; calling `agent.run(...)` simply traverses the underlying graph from start to finish. However, if you need deeper insight or control — for example to inject your own logic at specific stages — Pydantic AI exposes the lower-level iteration process via [`Agent.iter`][pydantic_ai.Agent.iter]. This method returns an [`AgentRun`][pydantic_ai.agent.AgentRun], which you can async-iterate over, or manually drive node-by-node via the [`next`][pydantic_ai.agent.AgentRun.next] method. Once the agent's graph returns an [`End`][pydantic_graph.nodes.End], you have the final result along with a detailed history of all steps.
 
 #### `async for` iteration
 
@@ -149,20 +310,22 @@ async def main():
         ),
         CallToolsNode(
             model_response=ModelResponse(
-                parts=[TextPart(content='Paris')],
+                parts=[TextPart(content='The capital of France is Paris.')],
                 usage=Usage(
-                    requests=1, request_tokens=56, response_tokens=1, total_tokens=57
+                    requests=1, request_tokens=56, response_tokens=7, total_tokens=63
                 ),
                 model_name='gpt-4o',
                 timestamp=datetime.datetime(...),
             )
         ),
-        End(data=FinalResult(output='Paris')),
+        End(data=FinalResult(output='The capital of France is Paris.')),
     ]
     """
     print(agent_run.result.output)
-    #> Paris
+    #> The capital of France is Paris.
 ```
+
+_(This example is complete, it can be run "as is" — you'll need to add `asyncio.run(main())` to run `main`)_
 
 - The `AgentRun` is an async iterator that yields each node (`BaseNode` or `End`) in the flow.
 - The run ends when an `End` node is returned.
@@ -212,18 +375,18 @@ async def main():
             ),
             CallToolsNode(
                 model_response=ModelResponse(
-                    parts=[TextPart(content='Paris')],
+                    parts=[TextPart(content='The capital of France is Paris.')],
                     usage=Usage(
                         requests=1,
                         request_tokens=56,
-                        response_tokens=1,
-                        total_tokens=57,
+                        response_tokens=7,
+                        total_tokens=63,
                     ),
                     model_name='gpt-4o',
                     timestamp=datetime.datetime(...),
                 )
             ),
-            End(data=FinalResult(output='Paris')),
+            End(data=FinalResult(output='The capital of France is Paris.')),
         ]
         """
 ```
@@ -233,19 +396,19 @@ async def main():
 3. When you call `await agent_run.next(node)`, it executes that node in the agent's graph, updates the run's history, and returns the _next_ node to run.
 4. You could also inspect or mutate the new `node` here as needed.
 
-#### Accessing usage and the final output
+_(This example is complete, it can be run "as is" — you'll need to add `asyncio.run(main())` to run `main`)_
+
+#### Accessing usage and final output
 
 You can retrieve usage statistics (tokens, requests, etc.) at any time from the [`AgentRun`][pydantic_ai.agent.AgentRun] object via `agent_run.usage()`. This method returns a [`Usage`][pydantic_ai.usage.Usage] object containing the usage data.
 
 Once the run finishes, `agent_run.result` becomes a [`AgentRunResult`][pydantic_ai.agent.AgentRunResult] object containing the final output (and related metadata).
 
----
-
-### Streaming
+#### Streaming All Events and Output
 
 Here is an example of streaming an agent run in combination with `async for` iteration:
 
-```python {title="streaming.py"}
+```python {title="streaming_iter.py"}
 import asyncio
 from dataclasses import dataclass
 from datetime import date
@@ -258,6 +421,7 @@ from pydantic_ai.messages import (
     PartDeltaEvent,
     PartStartEvent,
     TextPartDelta,
+    ThinkingPartDelta,
     ToolCallPartDelta,
 )
 from pydantic_ai.tools import RunContext
@@ -271,9 +435,7 @@ class WeatherService:
 
     async def get_historic_weather(self, location: str, forecast_date: date) -> str:
         # In real code: call a historical weather API or DB
-        return (
-            f'The weather in {location} on {forecast_date} was 18°C and partly cloudy.'
-        )
+        return f'The weather in {location} on {forecast_date} was 18°C and partly cloudy.'
 
 
 weather_agent = Agent[WeatherService, str](
@@ -310,33 +472,40 @@ async def main():
                 output_messages.append(f'=== UserPromptNode: {node.user_prompt} ===')
             elif Agent.is_model_request_node(node):
                 # A model request node => We can stream tokens from the model's request
-                output_messages.append(
-                    '=== ModelRequestNode: streaming partial request tokens ==='
-                )
+                output_messages.append('=== ModelRequestNode: streaming partial request tokens ===')
                 async with node.stream(run.ctx) as request_stream:
+                    final_result_found = False
                     async for event in request_stream:
                         if isinstance(event, PartStartEvent):
-                            output_messages.append(
-                                f'[Request] Starting part {event.index}: {event.part!r}'
-                            )
+                            output_messages.append(f'[Request] Starting part {event.index}: {event.part!r}')
                         elif isinstance(event, PartDeltaEvent):
                             if isinstance(event.delta, TextPartDelta):
                                 output_messages.append(
                                     f'[Request] Part {event.index} text delta: {event.delta.content_delta!r}'
                                 )
+                            elif isinstance(event.delta, ThinkingPartDelta):
+                                output_messages.append(
+                                    f'[Request] Part {event.index} thinking delta: {event.delta.content_delta!r}'
+                                )
                             elif isinstance(event.delta, ToolCallPartDelta):
                                 output_messages.append(
-                                    f'[Request] Part {event.index} args_delta={event.delta.args_delta}'
+                                    f'[Request] Part {event.index} args delta: {event.delta.args_delta}'
                                 )
                         elif isinstance(event, FinalResultEvent):
                             output_messages.append(
-                                f'[Result] The model produced a final output (tool_name={event.tool_name})'
+                                f'[Result] The model started producing a final result (tool_name={event.tool_name})'
                             )
+                            final_result_found = True
+                            break
+
+                    if final_result_found:
+                        # Once the final result is found, we can call `AgentStream.stream_text()` to stream the text.
+                        # A similar `AgentStream.stream_output()` method is available to stream structured output.
+                        async for output in request_stream.stream_text():
+                            output_messages.append(f'[Output] {output}')
             elif Agent.is_call_tools_node(node):
                 # A handle-response node => The model returned some data, potentially calls a tool
-                output_messages.append(
-                    '=== CallToolsNode: streaming partial response & tool usage ==='
-                )
+                output_messages.append('=== CallToolsNode: streaming partial response & tool usage ===')
                 async with node.stream(run.ctx) as handle_stream:
                     async for event in handle_stream:
                         if isinstance(event, FunctionToolCallEvent):
@@ -348,11 +517,10 @@ async def main():
                                 f'[Tools] Tool call {event.tool_call_id!r} returned => {event.result.content}'
                             )
             elif Agent.is_end_node(node):
-                assert run.result.output == node.data.output
                 # Once an End node is reached, the agent run is complete
-                output_messages.append(
-                    f'=== Final Agent Output: {run.result.output} ==='
-                )
+                assert run.result is not None
+                assert run.result.output == node.data.output
+                output_messages.append(f'=== Final Agent Output: {run.result.output} ===')
 
 
 if __name__ == '__main__':
@@ -364,26 +532,27 @@ if __name__ == '__main__':
         '=== UserPromptNode: What will the weather be like in Paris on Tuesday? ===',
         '=== ModelRequestNode: streaming partial request tokens ===',
         "[Request] Starting part 0: ToolCallPart(tool_name='weather_forecast', tool_call_id='0001')",
-        '[Request] Part 0 args_delta={"location":"Pa',
-        '[Request] Part 0 args_delta=ris","forecast_',
-        '[Request] Part 0 args_delta=date":"2030-01-',
-        '[Request] Part 0 args_delta=01"}',
+        '[Request] Part 0 args delta: {"location":"Pa',
+        '[Request] Part 0 args delta: ris","forecast_',
+        '[Request] Part 0 args delta: date":"2030-01-',
+        '[Request] Part 0 args delta: 01"}',
         '=== CallToolsNode: streaming partial response & tool usage ===',
         '[Tools] The LLM calls tool=\'weather_forecast\' with args={"location":"Paris","forecast_date":"2030-01-01"} (tool_call_id=\'0001\')',
         "[Tools] Tool call '0001' returned => The forecast in Paris on 2030-01-01 is 24°C and sunny.",
         '=== ModelRequestNode: streaming partial request tokens ===',
         "[Request] Starting part 0: TextPart(content='It will be ')",
-        '[Result] The model produced a final output (tool_name=None)',
-        "[Request] Part 0 text delta: 'warm and sunny '",
-        "[Request] Part 0 text delta: 'in Paris on '",
-        "[Request] Part 0 text delta: 'Tuesday.'",
+        '[Result] The model started producing a final result (tool_name=None)',
+        '[Output] It will be ',
+        '[Output] It will be warm and sunny ',
+        '[Output] It will be warm and sunny in Paris on ',
+        '[Output] It will be warm and sunny in Paris on Tuesday.',
         '=== CallToolsNode: streaming partial response & tool usage ===',
         '=== Final Agent Output: It will be warm and sunny in Paris on Tuesday. ===',
     ]
     """
 ```
 
----
+_(This example is complete, it can be run "as is")_
 
 ### Additional Configuration
 
@@ -503,7 +672,7 @@ result_sync = agent.run_sync(
     model_settings=ModelSettings(temperature=0.0)  # Final temperature: 0.0
 )
 print(result_sync.output)
-#> Rome
+#> The capital of Italy is Rome.
 ```
 
 The final request uses `temperature=0.0` (run-time), `max_tokens=500` (from model), demonstrating how settings merge with run-time taking precedence.
@@ -513,20 +682,21 @@ The final request uses `temperature=0.0` (run-time), `max_tokens=500` (from mode
 
 ### Model specific settings
 
-If you wish to further customize model behavior, you can use a subclass of [`ModelSettings`][pydantic_ai.settings.ModelSettings], like [`GeminiModelSettings`][pydantic_ai.models.gemini.GeminiModelSettings], associated with your model of choice.
+If you wish to further customize model behavior, you can use a subclass of [`ModelSettings`][pydantic_ai.settings.ModelSettings], like
+[`GoogleModelSettings`][pydantic_ai.models.google.GoogleModelSettings], associated with your model of choice.
 
 For example:
 
 ```py
 from pydantic_ai import Agent, UnexpectedModelBehavior
-from pydantic_ai.models.gemini import GeminiModelSettings
+from pydantic_ai.models.google import GoogleModelSettings
 
 agent = Agent('google-gla:gemini-1.5-flash')
 
 try:
     result = agent.run_sync(
         'Write a list of 5 very rude things that I might say to the universe after stubbing my toe in the dark:',
-        model_settings=GeminiModelSettings(
+        model_settings=GoogleModelSettings(
             temperature=0.0,  # general model settings can also be specified
             gemini_safety_settings=[
                 {
@@ -899,7 +1069,7 @@ with capture_run_messages() as messages:  # (2)!
 _(This example is complete, it can be run "as is")_
 
 !!! note
-    If you call [`run`][pydantic_ai.Agent.run], [`run_sync`][pydantic_ai.Agent.run_sync], or [`run_stream`][pydantic_ai.Agent.run_stream] more than once within a single `capture_run_messages` context, `messages` will represent the messages exchanged during the first call only.
+    If you call [`run`][pydantic_ai.agent.AbstractAgent.run], [`run_sync`][pydantic_ai.agent.AbstractAgent.run_sync], or [`run_stream`][pydantic_ai.agent.AbstractAgent.run_stream] more than once within a single `capture_run_messages` context, `messages` will represent the messages exchanged during the first call only.
 
 
 === File: docs/dependencies.md ===
@@ -1324,7 +1494,7 @@ The situation is different for certain models:
 
 - [`AnthropicModel`][pydantic_ai.models.anthropic.AnthropicModel]: if you provide a PDF document via `DocumentUrl`, the URL is sent directly in the API request, so no download happens on the user side.
 
-- [`GeminiModel`][pydantic_ai.models.gemini.GeminiModel] and [`GoogleModel`][pydantic_ai.models.google.GoogleModel] on Vertex AI: any URL provided using `ImageUrl`, `AudioUrl`, `VideoUrl`, or `DocumentUrl` is sent as-is in the API request and no data is downloaded beforehand.
+- [`GoogleModel`][pydantic_ai.models.google.GoogleModel] on Vertex AI: any URL provided using `ImageUrl`, `AudioUrl`, `VideoUrl`, or `DocumentUrl` is sent as-is in the API request and no data is downloaded beforehand.
 
   See the [Gemini API docs for Vertex AI](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#filedata) to learn more about supported URLs, formats and limitations:
 
@@ -1334,7 +1504,7 @@ The situation is different for certain models:
 
   However, because of crawling restrictions, it may happen that Gemini can't access certain URLs. In that case, you can instruct Pydantic AI to download the file content and send that instead of the URL by setting the boolean flag `force_download` to `True`. This attribute is available on all objects that inherit from [`FileUrl`][pydantic_ai.messages.FileUrl].
 
-- [`GeminiModel`][pydantic_ai.models.gemini.GeminiModel] and [`GoogleModel`][pydantic_ai.models.google.GoogleModel] on GLA: YouTube video URLs are sent directly in the request to the model.
+- [`GoogleModel`][pydantic_ai.models.google.GoogleModel] on GLA: YouTube video URLs are sent directly in the request to the model.
 
 
 === File: docs/mcp/client.md ===
@@ -1575,6 +1745,54 @@ calculator_server = MCPServerSSE(
 agent = Agent('openai:gpt-4o', toolsets=[weather_server, calculator_server])
 ```
 
+## Custom TLS / SSL configuration
+
+In some environments you need to tweak how HTTPS connections are established –
+for example to trust an internal Certificate Authority, present a client
+certificate for **mTLS**, or (during local development only!) disable
+certificate verification altogether.
+All HTTP-based MCP client classes
+([`MCPServerStreamableHTTP`][pydantic_ai.mcp.MCPServerStreamableHTTP] and
+[`MCPServerSSE`][pydantic_ai.mcp.MCPServerSSE]) expose an `http_client`
+parameter that lets you pass your own pre-configured
+[`httpx.AsyncClient`](https://www.python-httpx.org/async/).
+
+```python {title="mcp_custom_tls_client.py" py="3.10"}
+import httpx
+import ssl
+
+from pydantic_ai import Agent
+from pydantic_ai.mcp import MCPServerSSE
+
+
+# Trust an internal / self-signed CA
+ssl_ctx = ssl.create_default_context(cafile="/etc/ssl/private/my_company_ca.pem")
+
+# OPTIONAL: if the server requires **mutual TLS** load your client certificate
+ssl_ctx.load_cert_chain(certfile="/etc/ssl/certs/client.crt", keyfile="/etc/ssl/private/client.key",)
+
+http_client = httpx.AsyncClient(
+    verify=ssl_ctx,
+    timeout=httpx.Timeout(10.0),
+)
+
+server = MCPServerSSE(
+    url="http://localhost:3001/sse",
+    http_client=http_client,  # (1)!
+)
+agent = Agent("openai:gpt-4o", toolsets=[server])
+
+async def main():
+    async with agent:
+        result = await agent.run('How many days between 2000-01-01 and 2025-03-18?')
+    print(result.output)
+    #> There are 9,208 days between January 1, 2000, and March 18, 2025.
+```
+
+1. When you supply `http_client`, Pydantic AI re-uses this client for every
+   request.  Anything supported by **httpx** (`verify`, `cert`, custom
+   proxies, timeouts, etc.) therefore applies to all MCP traffic.
+
 ## MCP Sampling
 
 !!! info "What is MCP Sampling?"
@@ -1741,7 +1959,7 @@ The MCP Run Python server is distributed as a [JSR package](https://jsr.io/@pyda
 ```bash {title="terminal"}
 deno run \
   -N -R=node_modules -W=node_modules --node-modules-dir=auto \
-  jsr:@pydantic/mcp-run-python [stdio|sse|warmup]
+  jsr:@pydantic/mcp-run-python [stdio|streamable_http|sse|warmup]
 ```
 
 where:
@@ -1754,6 +1972,10 @@ where:
 - `stdio` runs the server with the
   [Stdio MCP transport](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#stdio)
   — suitable for running the process as a subprocess locally
+- `streamable_http` runs the server with the
+  [Streamable HTTP MCP transport](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http)
+  — running the server as an HTTP server to connect locally or remotely.
+  This supports stateful requests, but does not require the client to hold a stateful connection like SSE
 - `sse` runs the server with the
   [SSE MCP transport](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#http-with-sse)
   — running the server as an HTTP server to connect locally or remotely
@@ -2016,7 +2238,10 @@ async def sampling_callback(
         SamplingMessage(
             role='user',
             content=TextContent(
-                type='text', text='write a poem about socks', annotations=None
+                type='text',
+                text='write a poem about socks',
+                annotations=None,
+                meta=None,
             ),
         )
     ]
@@ -2059,8 +2284,8 @@ Pydantic AI provides access to messages exchanged during an agent run. These mes
 After running an agent, you can access the messages exchanged during that run from the `result` object.
 
 Both [`RunResult`][pydantic_ai.agent.AgentRunResult]
-(returned by [`Agent.run`][pydantic_ai.Agent.run], [`Agent.run_sync`][pydantic_ai.Agent.run_sync])
-and [`StreamedRunResult`][pydantic_ai.result.StreamedRunResult] (returned by [`Agent.run_stream`][pydantic_ai.Agent.run_stream]) have the following methods:
+(returned by [`Agent.run`][pydantic_ai.agent.AbstractAgent.run], [`Agent.run_sync`][pydantic_ai.agent.AbstractAgent.run_sync])
+and [`StreamedRunResult`][pydantic_ai.result.StreamedRunResult] (returned by [`Agent.run_stream`][pydantic_ai.agent.AbstractAgent.run_stream]) have the following methods:
 
 - [`all_messages()`][pydantic_ai.agent.AgentRunResult.all_messages]: returns all messages, including messages from prior runs. There's also a variant that returns JSON bytes, [`all_messages_json()`][pydantic_ai.agent.AgentRunResult.all_messages_json].
 - [`new_messages()`][pydantic_ai.agent.AgentRunResult.new_messages]: returns only the messages from the current run. There's also a variant that returns JSON bytes, [`new_messages_json()`][pydantic_ai.agent.AgentRunResult.new_messages_json].
@@ -2193,8 +2418,8 @@ _(This example is complete, it can be run "as is" — you'll need to add `asynci
 The primary use of message histories in Pydantic AI is to maintain context across multiple agent runs.
 
 To use existing messages in a run, pass them to the `message_history` parameter of
-[`Agent.run`][pydantic_ai.Agent.run], [`Agent.run_sync`][pydantic_ai.Agent.run_sync] or
-[`Agent.run_stream`][pydantic_ai.Agent.run_stream].
+[`Agent.run`][pydantic_ai.agent.AbstractAgent.run], [`Agent.run_sync`][pydantic_ai.agent.AbstractAgent.run_sync] or
+[`Agent.run_stream`][pydantic_ai.agent.AbstractAgent.run_stream].
 
 If `message_history` is set and not empty, a new system prompt is not generated — we assume the existing message history includes a system prompt.
 
@@ -2386,6 +2611,10 @@ custom processing logic.
 Pydantic AI provides a `history_processors` parameter on `Agent` that allows you to intercept and modify
 the message history before each model request.
 
+!!! warning "History processors replace the message history"
+    History processors replace the message history in the state with the processed messages, including the new user prompt part.
+    This means that if you want to keep the original message history, you need to make a copy of it.
+
 ### Usage
 
 The `history_processors` is a list of callables that take a list of
@@ -2440,6 +2669,9 @@ agent = Agent('openai:gpt-4o', history_processors=[keep_recent_messages])
 long_conversation_history: list[ModelMessage] = []  # Your long conversation history here
 # result = agent.run_sync('What did we discuss?', message_history=long_conversation_history)
 ```
+
+!!! warning "Be careful when slicing the message history"
+    When slicing the message history, you need to make sure that tool calls and returns are paired, otherwise the LLM may return an error. For more details, refer to [this GitHub issue](https://github.com/pydantic/pydantic-ai/issues/2050#issuecomment-3019976269).
 
 #### `RunContext` parameter
 
@@ -2500,6 +2732,9 @@ async def summarize_old_messages(messages: list[ModelMessage]) -> list[ModelMess
 
 agent = Agent('openai:gpt-4o', history_processors=[summarize_old_messages])
 ```
+
+!!! warning "Be careful when summarizing the message history"
+    When summarizing the message history, you need to make sure that tool calls and returns are paired, otherwise the LLM may return an error. For more details, refer to [this GitHub issue](https://github.com/pydantic/pydantic-ai/issues/2050#issuecomment-3019976269), where you can find examples of summarizing the message history.
 
 ### Testing History Processors
 
@@ -2844,7 +3079,7 @@ If the model you're using is not working correctly out of the box, you can tweak
 ```py
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.profiles._json_schema import InlineDefsJsonSchemaTransformer
+from pydantic_ai.profiles import InlineDefsJsonSchemaTransformer
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -3015,6 +3250,41 @@ agent = Agent(model)
 ...
 ```
 
+### Vercel AI Gateway
+
+To use [Vercel's AI Gateway](https://vercel.com/docs/ai-gateway), first follow the [documentation](https://vercel.com/docs/ai-gateway) instructions on obtaining an API key or OIDC token.
+
+You can set your credentials using one of these environment variables:
+
+```bash
+export VERCEL_AI_GATEWAY_API_KEY='your-ai-gateway-api-key'
+# OR
+export VERCEL_OIDC_TOKEN='your-oidc-token'
+```
+
+Once you have set the environment variable, you can use it with the [`VercelProvider`][pydantic_ai.providers.vercel.VercelProvider]:
+
+```python
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.providers.vercel import VercelProvider
+
+# Uses environment variable automatically
+model = OpenAIModel(
+    'anthropic/claude-4-sonnet',
+    provider=VercelProvider(),
+)
+agent = Agent(model)
+
+# Or pass the API key directly
+model = OpenAIModel(
+    'anthropic/claude-4-sonnet',
+    provider=VercelProvider(api_key='your-vercel-ai-gateway-api-key'),
+)
+agent = Agent(model)
+...
+```
+
 ### Grok (xAI)
 
 Go to [xAI API Console](https://console.x.ai/) and create an API key.
@@ -3028,6 +3298,24 @@ from pydantic_ai.providers.grok import GrokProvider
 model = OpenAIModel(
     'grok-2-1212',
     provider=GrokProvider(api_key='your-xai-api-key'),
+)
+agent = Agent(model)
+...
+```
+
+### MoonshotAI
+
+Create an API key in the [Moonshot Console](https://platform.moonshot.ai/console).
+With that key you can instantiate the [`MoonshotAIProvider`][pydantic_ai.providers.moonshotai.MoonshotAIProvider]:
+
+```python
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.providers.moonshotai import MoonshotAIProvider
+
+model = OpenAIModel(
+    'kimi-k2-0711-preview',
+    provider=MoonshotAIProvider(api_key='your-moonshot-api-key'),
 )
 agent = Agent(model)
 ...
@@ -3190,7 +3478,7 @@ Structured outputs (like tools) use Pydantic to build the JSON schema used for t
 !!! note "Type checking considerations"
     The Agent class is generic in its output type, and this type is carried through to `AgentRunResult.output` and `StreamedRunResult.output` so that your IDE or static type checker can warn you when your code doesn't properly take into account all the possible values those outputs could have.
 
-    Static type checkers like pyright and mypy will do their best the infer the agent's output type from the `output_type` you've specified, but they're not always able to do so correctly when you provide functions or multiple types in a union or list, even though Pydantic AI will behave correctly. When this happens, your type checker will complain even when you're confident you've passed a valid `output_type`, and you'll need to help the type checker by explicitly specifying the generic parameters on the `Agent` constructor. This is shown in the second example below and the output functions example further down.
+    Static type checkers like pyright and mypy will do their best to infer the agent's output type from the `output_type` you've specified, but they're not always able to do so correctly when you provide functions or multiple types in a union or list, even though Pydantic AI will behave correctly. When this happens, your type checker will complain even when you're confident you've passed a valid `output_type`, and you'll need to help the type checker by explicitly specifying the generic parameters on the `Agent` constructor. This is shown in the second example below and the output functions example further down.
 
     Specifically, there are three valid uses of `output_type` where you'll need to do this:
 
@@ -3470,7 +3758,7 @@ agent = Agent(
     'openai:gpt-4o',
     output_type=NativeOutput(
         [Fruit, Vehicle], # (1)!
-        name='Fruit or vehicle',
+        name='Fruit_or_vehicle',
         description='Return a fruit or vehicle.'
     ),
 )
@@ -3627,6 +3915,13 @@ There two main challenges with streamed results:
 1. Validating structured responses before they're complete, this is achieved by "partial validation" which was recently added to Pydantic in [pydantic/pydantic#10748](https://github.com/pydantic/pydantic/pull/10748).
 2. When receiving a response, we don't know if it's the final response without starting to stream it and peeking at the content. Pydantic AI streams just enough of the response to sniff out if it's a tool call or an output, then streams the whole thing and calls tools, or returns the stream as a [`StreamedRunResult`][pydantic_ai.result.StreamedRunResult].
 
+!!! note
+    As the `run_stream()` method will consider the first output matching the `output_type` to be the final output,
+    it will stop running the agent graph and will not execute any tool calls made by the model after this "final" output.
+
+    If you want to always run the agent graph to completion and stream all events from the model's streaming response and the agent's execution of tools,
+    use [`agent.run()`][pydantic_ai.agent.AbstractAgent.run] with an `event_stream_handler` ([docs](agents.md#streaming-all-events)) or [`agent.iter()`][pydantic_ai.agent.AbstractAgent.iter] ([docs](agents.md#streaming-all-events-and-output)) instead.
+
 ### Streaming Text
 
 Example of streamed text output:
@@ -3650,7 +3945,7 @@ async def main():
 ```
 
 1. Streaming works with the standard [`Agent`][pydantic_ai.Agent] class, and doesn't require any special setup, just a model that supports streaming (currently all models support streaming).
-2. The [`Agent.run_stream()`][pydantic_ai.Agent.run_stream] method is used to start a streamed run, this method returns a context manager so the connection can be closed when the stream completes.
+2. The [`Agent.run_stream()`][pydantic_ai.agent.AbstractAgent.run_stream] method is used to start a streamed run, this method returns a context manager so the connection can be closed when the stream completes.
 3. Each item yield by [`StreamedRunResult.stream_text()`][pydantic_ai.result.StreamedRunResult.stream_text] is the complete text response, extended as new data is received.
 
 _(This example is complete, it can be run "as is" — you'll need to add `asyncio.run(main())` to run `main`)_
@@ -3685,22 +3980,20 @@ _(This example is complete, it can be run "as is" — you'll need to add `asynci
 
 ### Streaming Structured Output
 
-Not all types are supported with partial validation in Pydantic, see [pydantic/pydantic#10748](https://github.com/pydantic/pydantic/pull/10748), generally for model-like structures it's currently best to use `TypeDict`.
-
-Here's an example of streaming a use profile as it's built:
+Here's an example of streaming a user profile as it's built:
 
 ```python {title="streamed_user_profile.py" line_length="120"}
 from datetime import date
 
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, NotRequired
 
 from pydantic_ai import Agent
 
 
-class UserProfile(TypedDict, total=False):
+class UserProfile(TypedDict):
     name: str
-    dob: date
-    bio: str
+    dob: NotRequired[date]
+    bio: NotRequired[str]
 
 
 agent = Agent(
@@ -3726,7 +4019,7 @@ async def main():
 
 _(This example is complete, it can be run "as is" — you'll need to add `asyncio.run(main())` to run `main`)_
 
-If you want fine-grained control of validation, particularly catching validation errors, you can use the following pattern:
+If you want fine-grained control of validation, you can use the following pattern to get the entire partial [`ModelResponse`][pydantic_ai.messages.ModelResponse]:
 
 ```python {title="streamed_user_profile.py" line_length="120"}
 from datetime import date
@@ -3795,7 +4088,7 @@ There are a number of ways to register tools with an agent:
 - via the [`@agent.tool_plain`][pydantic_ai.Agent.tool_plain] decorator — for tools that do not need access to the agent [context][pydantic_ai.tools.RunContext]
 - via the [`tools`][pydantic_ai.Agent.__init__] keyword argument to `Agent` which can take either plain functions, or instances of [`Tool`][pydantic_ai.tools.Tool]
 
-For more advanced use cases, the [toolsets](toolsets.md) feature lets you manage collections of tools (built by you or providd by an [MCP server](mcp/client.md) or other [third party](#third-party-tools)) and register them with an agent in one go via the [`toolsets`][pydantic_ai.Agent.__init__] keyword argument to `Agent`.
+For more advanced use cases, the [toolsets](toolsets.md) feature lets you manage collections of tools (built by you or provided by an [MCP server](mcp/client.md) or other [third party](#third-party-tools)) and register them with an agent in one go via the [`toolsets`][pydantic_ai.Agent.__init__] keyword argument to `Agent`. Internally, all `tools` and `toolsets` are gathered into a single [combined toolset](toolsets.md#combining-toolsets) that's made available to the model.
 
 !!! info "Function tools vs. RAG"
     Function tools are basically the "R" of RAG (Retrieval-Augmented Generation) — they augment what the model can do by letting it request extra information.
@@ -4399,7 +4692,7 @@ In addition to per-tool `prepare` methods, you can also define an agent-wide `pr
 The `prepare_tools` function should be of type [`ToolsPrepareFunc`][pydantic_ai.tools.ToolsPrepareFunc], which takes the [`RunContext`][pydantic_ai.tools.RunContext] and a list of [`ToolDefinition`][pydantic_ai.tools.ToolDefinition], and returns a new list of tool definitions (or `None` to disable all tools for that step).
 
 !!! note
-    The list of tool definitions passed to `prepare_tools` includes both regular function tools and tools from any [toolsets](toolsets.md) registered to the agent, but not [output tools](output.md#tool-output).
+    The list of tool definitions passed to `prepare_tools` includes both regular function tools and tools from any [toolsets](toolsets.md) registered on the agent, but not [output tools](output.md#tool-output).
 To modify output tools, you can set a `prepare_output_tools` function instead.
 
 Here's an example that makes all tools strict if the model is an OpenAI model:
@@ -4506,6 +4799,12 @@ def my_flaky_tool(query: str) -> str:
 ```
 
 Raising `ModelRetry` also generates a `RetryPromptPart` containing the exception message, which is sent back to the LLM to guide its next attempt. Both `ValidationError` and `ModelRetry` respect the `retries` setting configured on the `Tool` or `Agent`.
+
+### Parallel tool calls & concurrency
+
+When a model returns multiple tool calls in one response, Pydantic AI schedules them concurrently using `asyncio.create_task`.
+
+Async functions are run on the event loop, while sync functions are offloaded to threads. To get the best performance, _always_ use an async function _unless_ you're doing blocking I/O (and there's no way to use a non-blocking library instead) or CPU-bound work (like `numpy` or `scikit-learn` operations), so that simple functions are not offloaded to threads unnecessarily.
 
 ## Third-Party Tools
 
