@@ -1,5 +1,10 @@
 """Scribe MCP Server - Document conversion server using FastMCP."""
 
+import warnings
+
+# Suppress pydub ffmpeg warnings since they're only needed for audio processing
+warnings.filterwarnings("ignore", message="Couldn't find ffmpeg or avconv", module="pydub")
+
 from typing import Any
 
 from markitdown import MarkItDown
